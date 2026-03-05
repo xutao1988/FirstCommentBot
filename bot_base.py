@@ -4,8 +4,10 @@ import logging
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.helpers import escape_markdown
 
 from config import BotConfig, ChannelConfig, Settings, Template, load_templates, select_template
+from template_editor import load_group_templates, register_template_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +63,18 @@ class ChannelReviewBot:
             template_file=settings.default_template_file,
             reply_delay_seconds=settings.default_reply_delay_seconds,
         )
-        try:
-            templates = load_templates(ch.template_file)
-        except (FileNotFoundError, ValueError) as e:
-            logger.error("[%s] Auto-register failed for group %d: %s", self.name, discussion_group_id, e)
-            return
+
+        # Try loading saved group templates first, then fall back to default
+        templates = load_group_templates(settings.data_dir, discussion_group_id)
+        if templates:
+            logger.info("[%s] Loaded saved templates for group %d from data dir", self.name, discussion_group_id)
+        else:
+            try:
+                templates = load_templates(ch.template_file)
+            except (FileNotFoundError, ValueError) as e:
+                logger.error("[%s] Auto-register failed for group %d: %s", self.name, discussion_group_id, e)
+                return
+
         self._templates[discussion_group_id] = templates
         self._channel_settings[discussion_group_id] = ch
         logger.info(
@@ -106,7 +115,8 @@ class ChannelReviewBot:
             await asyncio.sleep(delay)
 
         try:
-            await message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
+            escaped_text = escape_markdown(text, version=2)
+            await message.reply_text(escaped_text, parse_mode=ParseMode.MARKDOWN_V2)
             logger.info(
                 "[%s] Replied in group %d (message %d): %s",
                 self.name, chat_id, message.message_id, text[:50],
@@ -133,6 +143,9 @@ class ChannelReviewBot:
 
         combined_filter = self._build_auto_forward_filter()
         app.add_handler(MessageHandler(combined_filter, self._handle_auto_forward))
+
+        # Register template editor handlers
+        register_template_handlers(app, self)
 
         logger.info("[%s] Application built with %d channel(s)", self.name, len(self._channel_settings))
         return app

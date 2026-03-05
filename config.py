@@ -21,6 +21,7 @@ class Settings:
     default_reply_delay_seconds: int = 3
     default_template_file: str = "default.json"
     log_file: str = "bot.log"
+    data_dir: str = "data"
 
 
 @dataclass
@@ -60,6 +61,7 @@ def load_config(config_path: str = "config.json") -> AppConfig:
         default_reply_delay_seconds=settings_data.get("default_reply_delay_seconds", 3),
         default_template_file=settings_data.get("default_template_file", "default.json"),
         log_file=settings_data.get("log_file", "bot.log"),
+        data_dir=settings_data.get("data_dir", "data"),
     )
 
     bots = []
