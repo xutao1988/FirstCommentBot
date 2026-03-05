@@ -1,0 +1,69 @@
+{
+  "templates": [
+    {
+      "text": "- English only in this chat.\n- No racism, sexism, or toxicity.\n- No spamming/advertising.\n- No unlawful discussions.\n- Remain respectful to others.\n- No sexual content allowed.\n\nWatcher Guru will never contact you first. Block and report anyone asking for personal information or funds.",
+      "weight": 2,
+      "buttons": [
+        [
+          {
+            "text": "加入频道",
+            "url": "https://t.me/channel",
+            "style": "primary"
+          }
+        ],
+        [
+          {
+            "text": "官网",
+            "url": "https://google.com"
+          }
+        ],
+        [
+          {
+            "text": "举报",
+            "url": "https://example.com/report",
+            "style": "danger"
+          }
+        ]
+      ]
+    },
+    {
+      "text": "- 本讨论群仅允许使用 中文和英语。\n- 不允许 种族主义、性别歧视或任何恶意言论。\n- 不允许 刷屏或广告宣传。\n- 不允许 讨论违法行为。\n- 请 始终尊重他人。\n- 不允许 任何性相关内容。\n\nWatcher Guru 永远不会主动联系你。若有人向你索要 个人信息或资金，请 立即拉黑并举报。",
+      "weight": 2,
+      "frozen": true
+    },
+    {
+      "text": "Excellent read - keep up the great work!",
+      "weight": 1,
+      "frozen": true
+    },
+    {
+      "text": "This is very helpful, thanks for posting!",
+      "weight": 2,
+      "frozen": true
+    },
+    {
+      "text": "Great share! Saved for later reference.",
+      "weight": 1,
+      "buttons": [
+        [
+          {
+            "text": "频道",
+            "url": "https://t.me/xxx",
+            "style": "primary"
+          },
+          {
+            "text": "官网",
+            "url": "https://example.com"
+          }
+        ],
+        [
+          {
+            "text": "举报",
+            "url": "https://example.com/report",
+            "style": "danger"
+          }
+        ]
+      ]
+    }
+  ]
+}

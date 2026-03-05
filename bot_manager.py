@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from bot_base import ChannelReviewBot
-from config import AppConfig
+from config import AppConfig, BotConfig
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,19 @@ class BotManager:
         for bot_config in self.config.bots:
             cls = BOT_CLASS_REGISTRY.get(bot_config.bot_class, ChannelReviewBot)
             bot = cls(bot_config)
+            bot._manager = self
             self.bots.append(bot)
             logger.info("Created bot: %s (class: %s)", bot.name, cls.__name__)
+
+    async def start_bot_dynamic(self, bot_config: BotConfig) -> ChannelReviewBot:
+        """Create and start a new bot instance at runtime (hot-start for cloned bots)."""
+        cls = BOT_CLASS_REGISTRY.get(bot_config.bot_class, ChannelReviewBot)
+        bot = cls(bot_config)
+        bot._manager = self
+        self.bots.append(bot)
+        await bot.start()
+        logger.info("Dynamically started bot: %s", bot.name)
+        return bot
 
     async def start_all(self) -> None:
         """Start all bots concurrently."""

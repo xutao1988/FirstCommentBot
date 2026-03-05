@@ -3,6 +3,16 @@
     {
       "name": "alpha_bot",
       "token_env": "BOT_ALPHA_TOKEN"
+    },
+    {
+      "name": "XAUT_review_bot",
+      "token_env": "BOT_XAUT_REVIEW_BOT_TOKEN",
+      "default_template_file": "XAUT_review_bot.json"
+    },
+    {
+      "name": "silver_review_bot",
+      "token_env": "BOT_SILVER_REVIEW_BOT_TOKEN",
+      "default_template_file": "silver_review_bot.json"
     }
   ],
   "settings": {

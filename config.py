@@ -99,12 +99,24 @@ def load_config(config_path: str = "config.json") -> AppConfig:
                 reply_delay_seconds=ch.get("reply_delay_seconds", settings.default_reply_delay_seconds),
             ))
 
+        bot_tpl_file = bot_data.get("default_template_file")
+        if bot_tpl_file:
+            bot_settings = Settings(
+                default_reply_delay_seconds=settings.default_reply_delay_seconds,
+                default_template_file=bot_tpl_file,
+                log_file=settings.log_file,
+                data_dir=settings.data_dir,
+                owner_id=settings.owner_id,
+            )
+        else:
+            bot_settings = settings
+
         bots.append(BotConfig(
             name=bot_data["name"],
             token=token,
             channels=channels,
             bot_class=bot_data.get("bot_class", "ChannelReviewBot"),
-            settings=settings,
+            settings=bot_settings,
         ))
 
     return AppConfig(bots=bots, settings=settings)
