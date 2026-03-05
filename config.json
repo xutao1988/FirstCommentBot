@@ -1,0 +1,13 @@
+{
+  "bots": [
+    {
+      "name": "alpha_bot",
+      "token_env": "BOT_ALPHA_TOKEN"
+    }
+  ],
+  "settings": {
+    "default_reply_delay_seconds": 3,
+    "default_template_file": "default.json",
+    "log_file": "bot.log"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "templates": [
+    {
+      "text": "Thanks for sharing\\! Great content as always\\.",
+      "weight": 2
+    },
+    {
+      "text": "Really insightful post\\! Looking forward to more\\.",
+      "weight": 2
+    },
+    {
+      "text": "*Excellent read* \\- keep up the great work\\!",
+      "weight": 1
+    },
+    {
+      "text": "This is very helpful, thanks for posting\\!",
+      "weight": 2
+    },
+    {
+      "text": "Great share\\! Saved for later reference\\.",
+      "weight": 1
+    }
+  ]
+}
