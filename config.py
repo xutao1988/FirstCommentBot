@@ -14,6 +14,8 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 class Template:
     text: str
     weight: int = 1
+    buttons: list[list[dict]] = field(default_factory=list)  # rows of buttons
+    frozen: bool = False
 
 
 @dataclass
@@ -46,6 +48,20 @@ class BotConfig:
 class AppConfig:
     bots: list[BotConfig] = field(default_factory=list)
     settings: Settings = field(default_factory=Settings)
+
+
+def _normalize_buttons(raw: list) -> list[list[dict]]:
+    """Normalize buttons from JSON — support both old flat and new nested format.
+
+    Old: [{"text": ..., "url": ...}, ...]        → wrap each in its own row
+    New: [[{"text": ..., "url": ...}, ...], ...]  → use as-is
+    """
+    if not raw:
+        return []
+    if isinstance(raw[0], dict):
+        # Old flat format: each button becomes its own row
+        return [[btn] for btn in raw]
+    return raw
 
 
 def load_config(config_path: str = "config.json") -> AppConfig:
@@ -109,7 +125,12 @@ def load_templates(template_file: str) -> list[Template]:
 
     templates = []
     for t in data.get("templates", []):
-        templates.append(Template(text=t["text"], weight=t.get("weight", 1)))
+        templates.append(Template(
+            text=t["text"],
+            weight=t.get("weight", 1),
+            buttons=_normalize_buttons(t.get("buttons", [])),
+            frozen=t.get("frozen", False),
+        ))
 
     if not templates:
         raise ValueError(f"No templates found in {path}")
@@ -117,8 +138,10 @@ def load_templates(template_file: str) -> list[Template]:
     return templates
 
 
-def select_template(templates: list[Template]) -> str:
-    """Select a template text using weighted random choice."""
-    texts = [t.text for t in templates]
-    weights = [t.weight for t in templates]
-    return random.choices(texts, weights=weights, k=1)[0]
+def select_template(templates: list[Template]) -> Template | None:
+    """Select a template using weighted random choice, skipping frozen ones."""
+    active = [t for t in templates if not t.frozen]
+    if not active:
+        return None
+    weights = [t.weight for t in active]
+    return random.choices(active, weights=weights, k=1)[0]

@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application, ChatMemberHandler, CommandHandler, MessageHandler,
@@ -70,15 +70,19 @@ class ChannelReviewBot:
             templates = load_group_templates(str(data_dir), gid)
             if templates:
                 settings = self.config.settings
+                meta = self._load_groups_meta()
+                saved_delay = meta.get(str(gid), {}).get(
+                    "reply_delay_seconds", settings.default_reply_delay_seconds
+                )
                 ch = ChannelConfig(
                     channel_id=0,
                     discussion_group_id=gid,
                     template_file=settings.default_template_file,
-                    reply_delay_seconds=settings.default_reply_delay_seconds,
+                    reply_delay_seconds=saved_delay,
                 )
                 self._templates[gid] = templates
                 self._channel_settings[gid] = ch
-                logger.info("[%s] Restored group %d from saved data (%d templates)", self.name, gid, len(templates))
+                logger.info("[%s] Restored group %d from saved data (%d templates, delay %ds)", self.name, gid, len(templates), saved_delay)
 
     # ---- Group metadata persistence ----
 
@@ -119,11 +123,11 @@ class ChannelReviewBot:
         meta.pop(str(group_id), None)
         self._save_groups_meta(meta)
 
-    def select_template(self, discussion_group_id: int) -> str:
+    def select_template(self, discussion_group_id: int) -> Template | None:
         """Select a comment template for the given discussion group. Override for custom logic."""
         templates = self._templates.get(discussion_group_id, [])
         if not templates:
-            raise ValueError(f"No templates available for discussion group {discussion_group_id}")
+            return None
         return select_template(templates)
 
     def _auto_register_group(self, discussion_group_id: int, channel_id: int) -> None:
@@ -233,10 +237,9 @@ class ChannelReviewBot:
 
         channel_config = self._channel_settings[chat_id]
 
-        try:
-            text = self.select_template(chat_id)
-        except ValueError as e:
-            logger.error("[%s] Template selection failed: %s", self.name, e)
+        template = self.select_template(chat_id)
+        if not template:
+            logger.debug("[%s] No active templates for group %d, skipping", self.name, chat_id)
             return
 
         delay = channel_config.reply_delay_seconds
@@ -245,11 +248,32 @@ class ChannelReviewBot:
             await asyncio.sleep(delay)
 
         try:
-            escaped_text = escape_markdown(text, version=2)
-            await message.reply_text(escaped_text, parse_mode=ParseMode.MARKDOWN_V2)
+            escaped_text = escape_markdown(template.text, version=2)
+
+            # Build inline keyboard from template buttons (rows of buttons)
+            reply_markup = None
+            if template.buttons:
+                kb_rows = []
+                for row in template.buttons:
+                    kb_row = []
+                    for btn in row:
+                        kwargs = {}
+                        if btn.get("style"):
+                            kwargs["api_kwargs"] = {"style": btn["style"]}
+                        kb_row.append(InlineKeyboardButton(
+                            text=btn["text"], url=btn["url"], **kwargs,
+                        ))
+                    kb_rows.append(kb_row)
+                reply_markup = InlineKeyboardMarkup(kb_rows)
+
+            await message.reply_text(
+                escaped_text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=reply_markup,
+            )
             logger.info(
                 "[%s] Replied in group %d (message %d): %s",
-                self.name, chat_id, message.message_id, text[:50],
+                self.name, chat_id, message.message_id, template.text[:50],
             )
         except Exception as e:
             logger.error("[%s] Failed to reply in group %d: %s", self.name, chat_id, e)
@@ -262,6 +286,7 @@ class ChannelReviewBot:
             "可用命令：\n"
             "/templates - 编辑评论模板\n"
             "/groups - 查看管理的群组（仅 Owner）\n"
+            "/contact - 联系客服\n"
             "/help - 查看帮助"
         )
 
@@ -276,6 +301,7 @@ class ChannelReviewBot:
             "/start - 开始使用\n"
             "/templates - 编辑评论模板\n"
             "/groups - 查看管理的群组（仅 Owner）\n"
+            "/contact - 联系客服\n"
             "/help - 查看帮助\n"
             "/cancel - 取消当前操作"
         )
@@ -311,6 +337,68 @@ class ChannelReviewBot:
 
         await update.message.reply_text("\n".join(lines))
 
+    # ---- Contact / customer-service mode ----
+
+    async def _cmd_contact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /contact — enter customer-service mode (private chat only)."""
+        if update.effective_chat.type != "private":
+            await update.message.reply_text("\u26a0\ufe0f 请在私聊中使用 /contact 命令。")
+            return
+        context.user_data["contact_mode"] = True
+        await update.message.reply_text(
+            "\U0001f4e8 已进入客服模式，请发送您的问题。\n完成后发送 /cancel 退出。"
+        )
+
+    async def _handle_contact_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Forward user messages to the owner while in contact mode."""
+        if not context.user_data.get("contact_mode"):
+            return
+        owner_id = self.config.settings.owner_id
+        if not owner_id:
+            await update.message.reply_text("\u26a0\ufe0f 客服功能暂不可用。")
+            return
+
+        user = update.effective_user
+        try:
+            forwarded = await update.message.forward(chat_id=owner_id)
+            # Send an annotation so the owner knows who sent it
+            await context.bot.send_message(
+                chat_id=owner_id,
+                text=f"\U0001f464 来自 {user.full_name}（ID: {user.id}）",
+            )
+            # Map the forwarded message id to the user so owner can reply
+            contact_map = context.bot_data.setdefault("contact_map", {})
+            contact_map[forwarded.message_id] = user.id
+            await update.message.reply_text("\u2705 已收到，请等待客服回复。")
+        except Exception as e:
+            logger.error("[%s] Failed to forward contact message: %s", self.name, e)
+            await update.message.reply_text("\u26a0\ufe0f 发送失败，请稍后再试。")
+
+    async def _handle_owner_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Forward the owner's reply back to the corresponding user."""
+        reply_msg = update.message.reply_to_message
+        if not reply_msg:
+            return
+        contact_map: dict = context.bot_data.get("contact_map", {})
+        user_id = contact_map.get(reply_msg.message_id)
+        if user_id is None:
+            return
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"\U0001f4ac 客服回复：\n{update.message.text}",
+            )
+        except Exception as e:
+            logger.error("[%s] Failed to send owner reply to user %d: %s", self.name, user_id, e)
+            await update.message.reply_text(f"\u26a0\ufe0f 回复发送失败: {e}")
+
+    async def _cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /cancel — exit contact mode (standalone, outside ConversationHandler)."""
+        if context.user_data.pop("contact_mode", None):
+            await update.message.reply_text("\u2705 已退出客服模式。")
+        else:
+            await update.message.reply_text("当前没有进行中的操作。")
+
     def _build_auto_forward_filter(self) -> filters.BaseFilter:
         """Build a combined filter for all configured discussion groups.
 
@@ -342,6 +430,27 @@ class ChannelReviewBot:
         # Register template editor handlers
         register_template_handlers(app, self)
 
+        # Contact / customer-service handlers
+        app.add_handler(CommandHandler("contact", self._cmd_contact))
+        owner_id = self.config.settings.owner_id
+        if owner_id:
+            owner_reply_filter = (
+                filters.Chat(owner_id)
+                & filters.REPLY
+                & filters.ChatType.PRIVATE
+                & ~filters.COMMAND
+            )
+            app.add_handler(MessageHandler(owner_reply_filter, self._handle_owner_reply))
+        contact_filter = (
+            filters.ChatType.PRIVATE
+            & ~filters.COMMAND
+            & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.VOICE | filters.Document.ALL)
+        )
+        app.add_handler(MessageHandler(contact_filter, self._handle_contact_message))
+
+        # Standalone /cancel (outside ConversationHandler, e.g. for contact mode)
+        app.add_handler(CommandHandler("cancel", self._cmd_cancel))
+
         logger.info("[%s] Application built with %d channel(s)", self.name, len(self._channel_settings))
         return app
 
@@ -357,6 +466,7 @@ class ChannelReviewBot:
             BotCommand("help", "查看帮助"),
             BotCommand("templates", "编辑评论模板"),
             BotCommand("groups", "查看管理的群组"),
+            BotCommand("contact", "联系客服"),
         ])
 
         await self.application.updater.start_polling(
