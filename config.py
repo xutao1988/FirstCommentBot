@@ -22,6 +22,7 @@ class Settings:
     default_template_file: str = "default.json"
     log_file: str = "bot.log"
     data_dir: str = "data"
+    owner_id: int = 0
 
 
 @dataclass
@@ -62,6 +63,7 @@ def load_config(config_path: str = "config.json") -> AppConfig:
         default_template_file=settings_data.get("default_template_file", "default.json"),
         log_file=settings_data.get("log_file", "bot.log"),
         data_dir=settings_data.get("data_dir", "data"),
+        owner_id=settings_data.get("owner_id", 0),
     )
 
     bots = []

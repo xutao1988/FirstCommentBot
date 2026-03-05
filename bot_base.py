@@ -1,13 +1,19 @@
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application, ChatMemberHandler, CommandHandler, MessageHandler,
+    filters, ContextTypes,
+)
 from telegram.helpers import escape_markdown
 
 from config import BotConfig, ChannelConfig, Settings, Template, load_templates, select_template
-from template_editor import load_group_templates, register_template_handlers
+from template_editor import load_group_templates, save_group_templates, register_template_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +38,7 @@ class ChannelReviewBot:
         self.application: Application | None = None
 
         self._load_all_templates()
+        self._restore_saved_groups()
 
     def _load_all_templates(self) -> None:
         """Pre-load templates for all configured channels."""
@@ -46,6 +53,71 @@ class ChannelReviewBot:
                 )
             except (FileNotFoundError, ValueError) as e:
                 logger.error("[%s] Failed to load templates for group %d: %s", self.name, ch.discussion_group_id, e)
+
+    def _restore_saved_groups(self) -> None:
+        """Restore groups from saved data files on startup."""
+        import re  # local import to keep module-level clean
+        data_dir = Path(self.config.settings.data_dir)
+        if not data_dir.exists():
+            return
+        for f in data_dir.glob("group_*.json"):
+            match = re.match(r"group_(-?\d+)\.json", f.name)
+            if not match:
+                continue
+            gid = int(match.group(1))
+            if gid in self._channel_settings:
+                continue  # already configured
+            templates = load_group_templates(str(data_dir), gid)
+            if templates:
+                settings = self.config.settings
+                ch = ChannelConfig(
+                    channel_id=0,
+                    discussion_group_id=gid,
+                    template_file=settings.default_template_file,
+                    reply_delay_seconds=settings.default_reply_delay_seconds,
+                )
+                self._templates[gid] = templates
+                self._channel_settings[gid] = ch
+                logger.info("[%s] Restored group %d from saved data (%d templates)", self.name, gid, len(templates))
+
+    # ---- Group metadata persistence ----
+
+    def _meta_path(self) -> Path:
+        return Path(self.config.settings.data_dir) / "groups_meta.json"
+
+    def _load_groups_meta(self) -> dict:
+        """Load groups metadata from disk."""
+        path = self._meta_path()
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+
+    def _save_groups_meta(self, meta: dict) -> None:
+        """Save groups metadata to disk."""
+        path = self._meta_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    def _record_group_added(self, chat, from_user, status: str) -> None:
+        """Record who added the bot to a group."""
+        meta = self._load_groups_meta()
+        meta[str(chat.id)] = {
+            "group_title": chat.title or "",
+            "group_id": chat.id,
+            "added_by_name": from_user.full_name if from_user else "未知",
+            "added_by_id": from_user.id if from_user else 0,
+            "bot_status": status,
+            "added_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save_groups_meta(meta)
+
+    def _remove_group_meta(self, group_id: int) -> None:
+        """Remove a group from metadata."""
+        meta = self._load_groups_meta()
+        meta.pop(str(group_id), None)
+        self._save_groups_meta(meta)
 
     def select_template(self, discussion_group_id: int) -> str:
         """Select a comment template for the given discussion group. Override for custom logic."""
@@ -77,10 +149,68 @@ class ChannelReviewBot:
 
         self._templates[discussion_group_id] = templates
         self._channel_settings[discussion_group_id] = ch
+
+        # Persist so the group survives bot restarts
+        save_group_templates(settings.data_dir, discussion_group_id, templates)
+
         logger.info(
             "[%s] Auto-registered group %d (channel %d, template: %s, delay: %ds)",
             self.name, discussion_group_id, channel_id, ch.template_file, ch.reply_delay_seconds,
         )
+
+    async def _handle_my_chat_member(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle bot being added to or promoted in a group — auto-register and notify owner."""
+        member_update = update.my_chat_member
+        if not member_update:
+            return
+
+        chat = member_update.chat
+        # Only care about groups/supergroups
+        if chat.type not in ("group", "supergroup"):
+            return
+
+        from_user = member_update.from_user
+        new_status = member_update.new_chat_member.status
+        old_status = member_update.old_chat_member.status
+        owner_id = self.config.settings.owner_id
+
+        if new_status in ("administrator", "member") and old_status in ("left", "kicked", "restricted"):
+            # Bot was added to / promoted in a group
+            if chat.id not in self._channel_settings:
+                self._auto_register_group(chat.id, channel_id=0)
+                logger.info("[%s] Bot joined/promoted in group %d, auto-registered", self.name, chat.id)
+
+            self._record_group_added(chat, from_user, new_status)
+
+            if owner_id:
+                user_name = from_user.full_name if from_user else "未知用户"
+                user_id = from_user.id if from_user else 0
+                status_text = "管理员" if new_status == "administrator" else "成员"
+                msg = (
+                    f"\U0001f514 Bot 被添加到新群组\n\n"
+                    f"群组：{chat.title} ({chat.id})\n"
+                    f"操作人：{user_name} ({user_id})\n"
+                    f"Bot 身份：{status_text}"
+                )
+                try:
+                    await context.bot.send_message(chat_id=owner_id, text=msg)
+                except Exception as e:
+                    logger.warning("[%s] Failed to notify owner: %s", self.name, e)
+
+        elif new_status in ("left", "kicked"):
+            # Bot was removed from the group — clean up
+            self._channel_settings.pop(chat.id, None)
+            self._templates.pop(chat.id, None)
+            self._remove_group_meta(chat.id)
+            logger.info("[%s] Bot removed from group %d, unregistered", self.name, chat.id)
+
+            if owner_id:
+                user_name = from_user.full_name if from_user else "未知用户"
+                msg = f"\u26a0\ufe0f Bot 已被移出群组：{chat.title} ({chat.id})\n操作人：{user_name}"
+                try:
+                    await context.bot.send_message(chat_id=owner_id, text=msg)
+                except Exception as e:
+                    logger.warning("[%s] Failed to notify owner: %s", self.name, e)
 
     async def _handle_auto_forward(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle an automatic forward from a channel to its discussion group.
@@ -124,6 +254,63 @@ class ChannelReviewBot:
         except Exception as e:
             logger.error("[%s] Failed to reply in group %d: %s", self.name, chat_id, e)
 
+    async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /start command."""
+        await update.message.reply_text(
+            "\U0001f44b 你好！我是频道评论 Bot。\n\n"
+            "将我添加到群组并设为管理员后，我会自动回复频道转发的消息。\n\n"
+            "可用命令：\n"
+            "/templates - 编辑评论模板\n"
+            "/groups - 查看管理的群组（仅 Owner）\n"
+            "/help - 查看帮助"
+        )
+
+    async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /help command."""
+        await update.message.reply_text(
+            "\U0001f4d6 使用帮助\n\n"
+            "1. 将 Bot 添加到讨论群组并设为管理员\n"
+            "2. 私聊 Bot 发送 /templates 编辑评论模板\n"
+            "3. 频道发布消息后，Bot 会自动在讨论群回复\n\n"
+            "命令列表：\n"
+            "/start - 开始使用\n"
+            "/templates - 编辑评论模板\n"
+            "/groups - 查看管理的群组（仅 Owner）\n"
+            "/help - 查看帮助\n"
+            "/cancel - 取消当前操作"
+        )
+
+    async def _cmd_groups(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /groups command — owner-only, show all managed groups."""
+        owner_id = self.config.settings.owner_id
+        if not update.effective_user or update.effective_user.id != owner_id:
+            await update.message.reply_text("\u26a0\ufe0f 仅 Bot 管理员可使用此命令。")
+            return
+
+        meta = self._load_groups_meta()
+        if not meta:
+            await update.message.reply_text("当前没有群组记录。")
+            return
+
+        lines = [f"\U0001f4cb Bot 管理的群组（共 {len(meta)} 个）\n"]
+        for i, (gid, info) in enumerate(meta.items(), 1):
+            title = info.get("group_title") or "未知群组"
+            added_by = info.get("added_by_name", "未知")
+            added_by_id = info.get("added_by_id", 0)
+            status = "管理员" if info.get("bot_status") == "administrator" else "成员"
+            added_at = info.get("added_at", "")[:10]  # date only
+            tpl_count = len(self._templates.get(int(gid), []))
+            lines.append(
+                f"{i}. {title}\n"
+                f"   ID: {gid}\n"
+                f"   添加人: {added_by} ({added_by_id})\n"
+                f"   Bot 身份: {status}\n"
+                f"   模板数: {tpl_count}\n"
+                f"   添加时间: {added_at}"
+            )
+
+        await update.message.reply_text("\n".join(lines))
+
     def _build_auto_forward_filter(self) -> filters.BaseFilter:
         """Build a combined filter for all configured discussion groups.
 
@@ -144,6 +331,14 @@ class ChannelReviewBot:
         combined_filter = self._build_auto_forward_filter()
         app.add_handler(MessageHandler(combined_filter, self._handle_auto_forward))
 
+        # Auto-register groups when bot is added/promoted
+        app.add_handler(ChatMemberHandler(self._handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+
+        # Command handlers
+        app.add_handler(CommandHandler("start", self._cmd_start))
+        app.add_handler(CommandHandler("help", self._cmd_help))
+        app.add_handler(CommandHandler("groups", self._cmd_groups))
+
         # Register template editor handlers
         register_template_handlers(app, self)
 
@@ -155,7 +350,19 @@ class ChannelReviewBot:
         self.application = self.build_application()
         await self.application.initialize()
         await self.application.start()
-        await self.application.updater.start_polling(drop_pending_updates=True)
+
+        # Register bot menu commands
+        await self.application.bot.set_my_commands([
+            BotCommand("start", "开始使用"),
+            BotCommand("help", "查看帮助"),
+            BotCommand("templates", "编辑评论模板"),
+            BotCommand("groups", "查看管理的群组"),
+        ])
+
+        await self.application.updater.start_polling(
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query", "my_chat_member"],
+        )
         logger.info("[%s] Started polling", self.name)
 
     async def stop(self) -> None:

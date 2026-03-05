@@ -1,23 +1,15 @@
 {
   "templates": [
     {
-      "text": "Thanks for sharing! Great content as always.",
-      "weight": 2
-    },
-    {
-      "text": "Really insightful post! Looking forward to more.",
-      "weight": 2
-    },
-    {
-      "text": "Excellent read - keep up the great work!",
+      "text": "沙发已备好，快来抢占沙发！",
       "weight": 1
     },
     {
-      "text": "This is very helpful, thanks for posting!",
-      "weight": 2
+      "text": "发言准则：文明吐槽，友好互撩。",
+      "weight": 1
     },
     {
-      "text": "Great share! Saved for later reference.",
+      "text": "前排占座，评论区的大门已为你敞开！",
       "weight": 1
     }
   ]
