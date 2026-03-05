@@ -25,6 +25,7 @@ class Settings:
     log_file: str = "bot.log"
     data_dir: str = "data"
     owner_id: int = 0
+    stats_channel_id: int = 0  # 统计频道 ID，0=不发送
 
 
 @dataclass
@@ -81,6 +82,7 @@ def load_config(config_path: str = "config.json") -> AppConfig:
         log_file=settings_data.get("log_file", "bot.log"),
         data_dir=settings_data.get("data_dir", "data"),
         owner_id=settings_data.get("owner_id", 0),
+        stats_channel_id=settings_data.get("stats_channel_id", 0),
     )
 
     bots = []
@@ -108,6 +110,7 @@ def load_config(config_path: str = "config.json") -> AppConfig:
                 log_file=settings.log_file,
                 data_dir=settings.data_dir,
                 owner_id=settings.owner_id,
+                stats_channel_id=settings.stats_channel_id,
             )
         else:
             bot_settings = settings

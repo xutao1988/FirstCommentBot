@@ -19,6 +19,7 @@
     "owner_id": 6441134695,
     "default_reply_delay_seconds": 3,
     "default_template_file": "default.json",
-    "log_file": "bot.log"
+    "log_file": "bot.log",
+    "stats_channel_id": -1003813689136
   }
 }

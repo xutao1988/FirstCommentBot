@@ -1,8 +1,9 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -38,6 +39,9 @@ class ChannelReviewBot:
         self._post_counter: dict[int, int] = {}  # discussion_group_id -> post count
         self.application: Application | None = None
         self._manager = None  # set by BotManager after creation
+
+        self._daily_stats: dict[int, dict] = {}  # gid -> {"posts_seen": N, "replies_sent": N}
+        self._load_daily_stats()
 
         self._load_all_templates()
         self._restore_saved_groups()
@@ -146,6 +150,26 @@ class ChannelReviewBot:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 
+    # ---- Daily stats persistence ----
+
+    def _stats_path(self) -> Path:
+        return Path(self.config.settings.data_dir) / "daily_stats.json"
+
+    def _load_daily_stats(self) -> None:
+        path = self._stats_path()
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+            self._daily_stats = {int(k): v for k, v in raw.items()}
+        else:
+            self._daily_stats = {}
+
+    def _save_daily_stats(self) -> None:
+        path = self._stats_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({str(k): v for k, v in self._daily_stats.items()}, f, ensure_ascii=False, indent=2)
+
     def select_template(self, discussion_group_id: int) -> Template | None:
         """Select a comment template for the given discussion group. Override for custom logic."""
         templates = self._templates.get(discussion_group_id, [])
@@ -250,6 +274,11 @@ class ChannelReviewBot:
 
         chat_id = message.chat_id
 
+        # Track posts seen
+        stats = self._daily_stats.setdefault(chat_id, {"posts_seen": 0, "replies_sent": 0})
+        stats["posts_seen"] += 1
+        self._save_daily_stats()
+
         if chat_id not in self._channel_settings:
             # Auto-discovery: register this group on first forwarded message
             sender_chat = message.sender_chat
@@ -303,12 +332,95 @@ class ChannelReviewBot:
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=reply_markup,
             )
+            # Track replies sent
+            stats = self._daily_stats.setdefault(chat_id, {"posts_seen": 0, "replies_sent": 0})
+            stats["replies_sent"] += 1
+            self._save_daily_stats()
+
             logger.info(
                 "[%s] Replied in group %d (message %d): %s",
                 self.name, chat_id, message.message_id, template.text[:50],
             )
         except Exception as e:
             logger.error("[%s] Failed to reply in group %d: %s", self.name, chat_id, e)
+
+    # ---- Daily report scheduling ----
+
+    def _schedule_daily_report(self) -> None:
+        """Register daily report job if stats_channel_id is configured."""
+        stats_channel_id = self.config.settings.stats_channel_id
+        if not stats_channel_id:
+            return
+        tz = ZoneInfo("Asia/Shanghai")
+        report_time = time(hour=8, minute=34, tzinfo=tz)
+        self.application.job_queue.run_daily(
+            self._send_daily_report,
+            time=report_time,
+            name=f"{self.name}_daily_report",
+        )
+        logger.info("[%s] Daily report job scheduled at 08:34 Asia/Shanghai -> channel %d", self.name, stats_channel_id)
+
+    async def _send_daily_report(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Job callback: build and send the daily stats report, then reset counters."""
+        stats_channel_id = self.config.settings.stats_channel_id
+        if not stats_channel_id:
+            return
+
+        tz = ZoneInfo("Asia/Shanghai")
+        # The job runs at 08:34, report covers the previous day
+        report_date = datetime.now(tz).date() - timedelta(days=1)
+
+        meta = self._load_groups_meta()
+        clones = self._load_clones_meta()
+        group_count = len(self._channel_settings)
+        clone_count = len(clones)
+
+        lines = [
+            f"\U0001f4ca 每日统计 — {report_date}",
+            "",
+            f"\U0001f465 管理群组：{group_count} 个",
+            f"\U0001f4e6 克隆 Bot：{clone_count} 个",
+            "",
+            "\U0001f4c8 各群组数据：",
+        ]
+
+        total_posts = 0
+        total_replies = 0
+        idx = 0
+
+        for gid, ch_cfg in self._channel_settings.items():
+            idx += 1
+            group_meta = meta.get(str(gid), {})
+            title = group_meta.get("group_title") or "未知群组"
+            stats = self._daily_stats.get(gid, {"posts_seen": 0, "replies_sent": 0})
+            posts = stats.get("posts_seen", 0)
+            replies = stats.get("replies_sent", 0)
+            total_posts += posts
+            total_replies += replies
+            tpl_count = len(self._templates.get(gid, []))
+            delay = ch_cfg.reply_delay_seconds
+            interval = ch_cfg.reply_interval
+
+            lines.append(
+                f"{idx}. {title} ({gid})\n"
+                f"   收到帖子: {posts} | 已评论: {replies}\n"
+                f"   模板: {tpl_count} 条 | 延时: {delay}s | 间隔: {interval}"
+            )
+
+        lines.append("")
+        lines.append(f"\U0001f4ca 汇总：收到 {total_posts} 条，评论 {total_replies} 条")
+
+        report_text = "\n".join(lines)
+
+        try:
+            await context.bot.send_message(chat_id=stats_channel_id, text=report_text)
+            logger.info("[%s] Daily report sent to %d", self.name, stats_channel_id)
+        except Exception as e:
+            logger.error("[%s] Failed to send daily report: %s", self.name, e)
+
+        # Reset counters
+        self._daily_stats.clear()
+        self._save_daily_stats()
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
@@ -606,6 +718,7 @@ class ChannelReviewBot:
             log_file=self.config.settings.log_file,
             data_dir=self.config.settings.data_dir,
             owner_id=self.config.settings.owner_id,
+            stats_channel_id=self.config.settings.stats_channel_id,
         )
         new_bot_config = BotConfig(
             name=bot_name,
@@ -816,6 +929,7 @@ class ChannelReviewBot:
             drop_pending_updates=True,
             allowed_updates=["message", "callback_query", "my_chat_member"],
         )
+        self._schedule_daily_report()
         logger.info("[%s] Started polling", self.name)
 
     async def stop(self) -> None:
