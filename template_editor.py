@@ -57,6 +57,8 @@ def save_group_templates(data_dir: str, group_id: int, templates: list[Template]
                 "weight": t.weight,
                 **({"buttons": t.buttons} if t.buttons else {}),
                 **({"frozen": True} if t.frozen else {}),
+                **({"media_file_id": t.media_file_id} if t.media_file_id else {}),
+                **({"media_type": t.media_type} if t.media_type else {}),
             }
             for t in templates
         ],
@@ -80,6 +82,8 @@ def load_group_templates(data_dir: str, group_id: int) -> list[Template] | None:
             weight=t.get("weight", 1),
             buttons=_normalize_buttons(t.get("buttons", [])),
             frozen=t.get("frozen", False),
+            media_file_id=t.get("media_file_id", ""),
+            media_type=t.get("media_type", ""),
         ))
     return templates if templates else None
 
@@ -185,6 +189,12 @@ def _build_template_list_text(templates: list[Template]) -> str:
             suffix += f" [按钮: {btn_total}]"
         if t.frozen:
             suffix += " [已冻结]"
+        if t.media_type == "photo":
+            suffix += " [图片]"
+        elif t.media_type == "animation":
+            suffix += " [GIF]"
+        elif t.media_type == "video":
+            suffix += " [视频]"
         lines.append(f"{i}. {prefix}{display_text}{suffix}")
     return "\n".join(lines)
 
@@ -407,6 +417,7 @@ def register_template_handlers(app: Application, bot) -> None:
             "同一行写多个按钮即并排显示：\n"
             "[频道](https://t.me/xxx){蓝} [官网](https://example.com)\n\n"
             "颜色可选：{红} {蓝} {绿}，不写则默认透明\n\n"
+            "也可直接发送 图片/GIF/视频（附文字说明）创建媒体模板\n\n"
             "发送 /cancel 取消操作"
         )
         return WAITING_TEXT
@@ -460,9 +471,15 @@ def register_template_handlers(app: Application, bot) -> None:
         context.user_data["tpl_edit_index"] = idx
 
         current = _format_template_for_edit(templates[idx])
+        media_hint = ""
+        t = templates[idx]
+        if t.media_file_id and t.media_type:
+            media_label = {"photo": "图片", "animation": "GIF", "video": "视频"}.get(t.media_type, "媒体")
+            media_hint = f"\n当前附带[{media_label}]，发送新媒体可替换，发送纯文字则移除媒体\n"
         await query.edit_message_text(
-            f"当前内容：\n{current}\n\n"
-            "请发送新内容（可用 --- 分隔按钮）：\n\n"
+            f"当前内容：\n{current}\n{media_hint}\n"
+            "请发送新内容（可用 --- 分隔按钮）：\n"
+            "也可直接发送 图片/GIF/视频（附文字说明）\n\n"
             "发送 /cancel 取消操作"
         )
         return WAITING_TEXT
@@ -521,6 +538,80 @@ def register_template_handlers(app: Application, bot) -> None:
         updated = bot._templates.get(gid, [])
         list_text = _build_template_list_text(updated)
         await update.message.reply_text(f"{msg}\n\n{list_text}", reply_markup=_build_main_keyboard(len(updated)))
+        return ConversationHandler.END
+
+    async def handle_media_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle photo/GIF/video message during add/edit conversation."""
+        message = update.message
+
+        # Determine media type and file_id
+        if message.photo:
+            media_file_id = message.photo[-1].file_id
+            media_type = "photo"
+        elif message.animation:
+            media_file_id = message.animation.file_id
+            media_type = "animation"
+        elif message.video:
+            media_file_id = message.video.file_id
+            media_type = "video"
+        else:
+            await message.reply_text("\u26a0\ufe0f 不支持的媒体类型，请发送图片、GIF 或视频。")
+            return WAITING_TEXT
+
+        # Caption is the text content
+        raw = (message.caption or "").strip()
+        if not raw:
+            await message.reply_text("媒体模板需要添加文字说明，请重新发送（附带 caption）：")
+            return WAITING_TEXT
+
+        text, buttons = _parse_template_input(raw)
+        if not text:
+            await message.reply_text("模板文本不能为空，请重新发送：")
+            return WAITING_TEXT
+
+        action = context.user_data.get("tpl_action")
+        gid = _get_group_id(context)
+        if not gid:
+            await message.reply_text("\u26a0\ufe0f 请先使用 /templates 选择群组。")
+            return ConversationHandler.END
+
+        templates = bot._templates.get(gid, [])
+        data_dir = bot.config.settings.data_dir
+
+        media_label = {"photo": "图片", "animation": "GIF", "video": "视频"}.get(media_type, "媒体")
+
+        if action == "add":
+            templates.append(Template(
+                text=text, weight=1, buttons=buttons,
+                media_file_id=media_file_id, media_type=media_type,
+            ))
+            bot._templates[gid] = templates
+            save_group_templates(data_dir, gid, templates)
+            msg = f"\u2705 已添加媒体模板 #{len(templates)} [{media_label}]"
+
+        elif action == "edit":
+            idx = context.user_data.get("tpl_edit_index", 0)
+            if 0 <= idx < len(templates):
+                templates[idx] = Template(
+                    text=text, weight=templates[idx].weight, buttons=buttons,
+                    frozen=templates[idx].frozen,
+                    media_file_id=media_file_id, media_type=media_type,
+                )
+                bot._templates[gid] = templates
+                save_group_templates(data_dir, gid, templates)
+                msg = f"\u2705 已更新模板 #{idx + 1} [{media_label}]"
+            else:
+                msg = "\u26a0\ufe0f 无效的模板编号。"
+        else:
+            msg = "\u26a0\ufe0f 未知操作。"
+
+        # Clear action state
+        for key in ("tpl_action", "tpl_edit_index"):
+            context.user_data.pop(key, None)
+
+        updated = bot._templates.get(gid, [])
+        list_text = _build_template_list_text(updated)
+        await message.reply_text(f"{msg}\n\n{list_text}", reply_markup=_build_main_keyboard(len(updated)))
         return ConversationHandler.END
 
     async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -638,9 +729,9 @@ def register_template_handlers(app: Application, bot) -> None:
 
         t = templates[idx]
         if action == "inc":
-            templates[idx] = Template(text=t.text, weight=t.weight + 1, buttons=t.buttons, frozen=t.frozen)
+            templates[idx] = Template(text=t.text, weight=t.weight + 1, buttons=t.buttons, frozen=t.frozen, media_file_id=t.media_file_id, media_type=t.media_type)
         elif action == "dec" and t.weight > 1:
-            templates[idx] = Template(text=t.text, weight=t.weight - 1, buttons=t.buttons, frozen=t.frozen)
+            templates[idx] = Template(text=t.text, weight=t.weight - 1, buttons=t.buttons, frozen=t.frozen, media_file_id=t.media_file_id, media_type=t.media_type)
         else:
             await query.answer("权重最小为 1", show_alert=True)
             return
@@ -700,7 +791,7 @@ def register_template_handlers(app: Application, bot) -> None:
             return
 
         t = templates[idx]
-        templates[idx] = Template(text=t.text, weight=t.weight, buttons=t.buttons, frozen=not t.frozen)
+        templates[idx] = Template(text=t.text, weight=t.weight, buttons=t.buttons, frozen=not t.frozen, media_file_id=t.media_file_id, media_type=t.media_type)
         bot._templates[gid] = templates
 
         data_dir = bot.config.settings.data_dir
@@ -894,12 +985,33 @@ def register_template_handlers(app: Application, bot) -> None:
 
         # Send as a new message so the user sees the actual rendering
         prefix = escape_markdown(f"\U0001f50d 模板 #{idx + 1} 预览：\n\n", version=2)
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"{prefix}{escaped_text}",
-            parse_mode=ParseMode.MARKDOWN_V2,
-            reply_markup=reply_markup,
-        )
+        chat_id = update.effective_chat.id
+        caption_or_text = f"{prefix}{escaped_text}"
+
+        if template.media_file_id and template.media_type:
+            send_func = {
+                "photo": context.bot.send_photo,
+                "animation": context.bot.send_animation,
+                "video": context.bot.send_video,
+            }.get(template.media_type)
+            if send_func:
+                await send_func(
+                    chat_id=chat_id,
+                    **{("photo" if template.media_type == "photo" else template.media_type): template.media_file_id},
+                    caption=caption_or_text,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=reply_markup,
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=caption_or_text,
+                    parse_mode=ParseMode.MARKDOWN_V2, reply_markup=reply_markup,
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id, text=caption_or_text,
+                parse_mode=ParseMode.MARKDOWN_V2, reply_markup=reply_markup,
+            )
 
     async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle tpl_back callback — return to main template list."""
@@ -927,6 +1039,10 @@ def register_template_handlers(app: Application, bot) -> None:
         states={
             WAITING_TEXT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                MessageHandler(
+                    (filters.PHOTO | filters.ANIMATION | filters.VIDEO) & ~filters.COMMAND,
+                    handle_media_input,
+                ),
             ],
         },
         fallbacks=[

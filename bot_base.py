@@ -327,11 +327,31 @@ class ChannelReviewBot:
                     kb_rows.append(kb_row)
                 reply_markup = InlineKeyboardMarkup(kb_rows)
 
-            await message.reply_text(
-                escaped_text,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                reply_markup=reply_markup,
-            )
+            if template.media_file_id and template.media_type:
+                send = {
+                    "photo": message.reply_photo,
+                    "animation": message.reply_animation,
+                    "video": message.reply_video,
+                }.get(template.media_type)
+                if send:
+                    await send(
+                        template.media_file_id,
+                        caption=escaped_text,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=reply_markup,
+                    )
+                else:
+                    await message.reply_text(
+                        escaped_text,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=reply_markup,
+                    )
+            else:
+                await message.reply_text(
+                    escaped_text,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=reply_markup,
+                )
             # Track replies sent
             stats = self._daily_stats.setdefault(chat_id, {"posts_seen": 0, "replies_sent": 0})
             stats["replies_sent"] += 1

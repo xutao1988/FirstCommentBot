@@ -16,6 +16,8 @@ class Template:
     weight: int = 1
     buttons: list[list[dict]] = field(default_factory=list)  # rows of buttons
     frozen: bool = False
+    media_file_id: str = ""   # Telegram file_id, empty = no media
+    media_type: str = ""      # "photo" / "animation" / "video", empty = text-only
 
 
 @dataclass
@@ -146,6 +148,8 @@ def load_templates(template_file: str) -> list[Template]:
             weight=t.get("weight", 1),
             buttons=_normalize_buttons(t.get("buttons", [])),
             frozen=t.get("frozen", False),
+            media_file_id=t.get("media_file_id", ""),
+            media_type=t.get("media_type", ""),
         ))
 
     if not templates:
