@@ -33,6 +33,7 @@ class ChannelConfig:
     discussion_group_id: int
     template_file: str = "default.json"
     reply_delay_seconds: int = 3
+    reply_interval: int = 1  # 每 N 条帖子评论一次，1=每条都评
 
 
 @dataclass

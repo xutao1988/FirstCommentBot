@@ -201,6 +201,7 @@ def _build_main_keyboard(num_templates: int = 0) -> InlineKeyboardMarkup:
             InlineKeyboardButton("\u2696\ufe0f 权重", callback_data="tpl_weight"),
             InlineKeyboardButton("\u2744\ufe0f 冻结", callback_data="tpl_freeze"),
             InlineKeyboardButton("\u23f1 延时", callback_data="tpl_delay"),
+            InlineKeyboardButton("\U0001f4ca 间隔", callback_data="tpl_interval"),
         ],
     ]
     if num_templates > 0:
@@ -270,6 +271,25 @@ def _build_delay_keyboard(current_delay: int) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("\u2796 5s", callback_data="tpl_dly_dec_5"),
             InlineKeyboardButton("\u2795 5s", callback_data="tpl_dly_inc_5"),
+        ],
+        [
+            InlineKeyboardButton("\U0001f519 返回", callback_data="tpl_back"),
+        ],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+def _build_interval_keyboard(current_interval: int) -> InlineKeyboardMarkup:
+    """Build a keyboard for adjusting reply interval (every N posts)."""
+    buttons = [
+        [
+            InlineKeyboardButton("\u2796 1", callback_data="tpl_itv_dec_1"),
+            InlineKeyboardButton(f"\U0001f4ca {current_interval}", callback_data="tpl_itv_noop"),
+            InlineKeyboardButton("\u2795 1", callback_data="tpl_itv_inc_1"),
+        ],
+        [
+            InlineKeyboardButton("\u2796 5", callback_data="tpl_itv_dec_5"),
+            InlineKeyboardButton("\u2795 5", callback_data="tpl_itv_inc_5"),
         ],
         [
             InlineKeyboardButton("\U0001f519 返回", callback_data="tpl_back"),
@@ -756,6 +776,69 @@ def register_template_handlers(app: Application, bot) -> None:
         text = f"\u23f1 评论延时设置\n\n当前延时：{new_delay} 秒\n评论将在频道消息转发后等待此时间再发送。"
         await query.edit_message_text(text, reply_markup=_build_delay_keyboard(new_delay))
 
+    async def cb_interval_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle tpl_interval callback — show interval adjustment UI."""
+        query = update.callback_query
+        await query.answer()
+
+        gid = _get_group_id(context)
+        if not gid:
+            await query.edit_message_text("\u26a0\ufe0f 请先使用 /templates 选择群组。")
+            return
+
+        user_id = update.effective_user.id
+        if not _check_permission(bot, user_id, gid):
+            await query.edit_message_text("\u26a0\ufe0f 你没有该群组的编辑权限。")
+            return
+
+        ch = bot._channel_settings.get(gid)
+        current = ch.reply_interval if ch else 1
+        text = f"\U0001f4ca 评论间隔设置\n\n当前间隔：每 {current} 条帖子评论一次\n设为 1 表示每条都评论。"
+        await query.edit_message_text(text, reply_markup=_build_interval_keyboard(current))
+
+    async def cb_interval_adjust(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle tpl_itv_inc/dec callbacks — adjust reply interval."""
+        query = update.callback_query
+
+        gid = _get_group_id(context)
+        if not gid:
+            await query.answer("\u26a0\ufe0f 请先使用 /templates 选择群组。", show_alert=True)
+            return
+
+        user_id = update.effective_user.id
+        if not _check_permission(bot, user_id, gid):
+            await query.answer("\u26a0\ufe0f 你没有该群组的编辑权限。", show_alert=True)
+            return
+
+        ch = bot._channel_settings.get(gid)
+        if not ch:
+            await query.answer("\u26a0\ufe0f 群组配置不存在。", show_alert=True)
+            return
+
+        # Parse: tpl_itv_inc_5 or tpl_itv_dec_1
+        parts = query.data.split("_")  # ['tpl', 'itv', 'inc'/'dec', '1'/'5']
+        action = parts[2]
+        step = int(parts[3])
+
+        current = ch.reply_interval
+        if action == "inc":
+            new_interval = current + step
+        else:
+            new_interval = max(1, current - step)
+
+        ch.reply_interval = new_interval
+
+        # Persist to groups_meta.json
+        meta = bot._load_groups_meta()
+        if str(gid) in meta:
+            meta[str(gid)]["reply_interval"] = new_interval
+            bot._save_groups_meta(meta)
+
+        await query.answer(f"间隔已设为每 {new_interval} 条")
+
+        text = f"\U0001f4ca 评论间隔设置\n\n当前间隔：每 {new_interval} 条帖子评论一次\n设为 1 表示每条都评论。"
+        await query.edit_message_text(text, reply_markup=_build_interval_keyboard(new_interval))
+
     async def cb_preview_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle tpl_preview callback — show numbered buttons to pick a template to preview."""
         query = update.callback_query
@@ -867,6 +950,8 @@ def register_template_handlers(app: Application, bot) -> None:
     app.add_handler(CallbackQueryHandler(cb_freeze_toggle, pattern=r"^tpl_frz_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_delay_select, pattern=r"^tpl_delay$"))
     app.add_handler(CallbackQueryHandler(cb_delay_adjust, pattern=r"^tpl_dly_(inc|dec)_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_interval_select, pattern=r"^tpl_interval$"))
+    app.add_handler(CallbackQueryHandler(cb_interval_adjust, pattern=r"^tpl_itv_(inc|dec)_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_preview_select, pattern=r"^tpl_preview$"))
     app.add_handler(CallbackQueryHandler(cb_preview_send, pattern=r"^tpl_pv_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_back, pattern=r"^tpl_back$"))

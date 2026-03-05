@@ -35,6 +35,7 @@ class ChannelReviewBot:
         self.name = bot_config.name
         self._templates: dict[int, list[Template]] = {}  # discussion_group_id -> templates
         self._channel_settings: dict[int, ChannelConfig] = {}  # discussion_group_id -> config
+        self._post_counter: dict[int, int] = {}  # discussion_group_id -> post count
         self.application: Application | None = None
         self._manager = None  # set by BotManager after creation
 
@@ -72,14 +73,17 @@ class ChannelReviewBot:
             if templates:
                 settings = self.config.settings
                 meta = self._load_groups_meta()
-                saved_delay = meta.get(str(gid), {}).get(
+                group_meta = meta.get(str(gid), {})
+                saved_delay = group_meta.get(
                     "reply_delay_seconds", settings.default_reply_delay_seconds
                 )
+                saved_interval = group_meta.get("reply_interval", 1)
                 ch = ChannelConfig(
                     channel_id=0,
                     discussion_group_id=gid,
                     template_file=settings.default_template_file,
                     reply_delay_seconds=saved_delay,
+                    reply_interval=saved_interval,
                 )
                 self._templates[gid] = templates
                 self._channel_settings[gid] = ch
@@ -255,6 +259,15 @@ class ChannelReviewBot:
                 return  # registration failed
 
         channel_config = self._channel_settings[chat_id]
+
+        # Interval check: skip if not at the Nth post
+        interval = channel_config.reply_interval
+        if interval > 1:
+            counter = self._post_counter.get(chat_id, 0) + 1
+            self._post_counter[chat_id] = counter
+            if counter % interval != 0:
+                logger.debug("[%s] Interval skip for group %d (%d/%d)", self.name, chat_id, counter, interval)
+                return
 
         template = self.select_template(chat_id)
         if not template:
