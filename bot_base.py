@@ -385,6 +385,9 @@ class ChannelReviewBot:
         stats_channel_id = self.config.settings.stats_channel_id
         if not stats_channel_id:
             return
+        if not self.application.job_queue:
+            logger.error("[%s] job_queue unavailable — install python-telegram-bot[job-queue]", self.name)
+            return
         tz = ZoneInfo("Asia/Shanghai")
         report_time = time(hour=8, minute=34, tzinfo=tz)
         self.application.job_queue.run_daily(
