@@ -9,6 +9,24 @@ logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+# MarkdownV2 special chars that are NOT formatting syntax
+_MD_ESCAPE_CHARS = r'\.!>#+\-=|{}'
+
+
+def escape_markdown_v2(text: str) -> str:
+    """Escape non-formatting MarkdownV2 special characters.
+
+    Preserves formatting syntax: * _ ~ ` [ ] ( )
+    Escapes: . ! > # + - = | { }
+    """
+    result = []
+    for ch in text:
+        if ch in _MD_ESCAPE_CHARS:
+            result.append(f'\\{ch}')
+        else:
+            result.append(ch)
+    return ''.join(result)
+
 
 @dataclass
 class Template:

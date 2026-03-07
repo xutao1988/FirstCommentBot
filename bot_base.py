@@ -11,9 +11,9 @@ from telegram.ext import (
     Application, CallbackQueryHandler, ChatMemberHandler, CommandHandler,
     MessageHandler, filters, ContextTypes,
 )
-from telegram.helpers import escape_markdown
 
-from config import BotConfig, ChannelConfig, Settings, Template, load_templates, select_template
+
+from config import BotConfig, ChannelConfig, Settings, Template, escape_markdown_v2, load_templates, select_template
 from template_editor import load_group_templates, save_group_templates, register_template_handlers
 
 logger = logging.getLogger(__name__)
@@ -323,7 +323,7 @@ class ChannelReviewBot:
             await asyncio.sleep(delay)
 
         try:
-            escaped_text = escape_markdown(template.text, version=2)
+            escaped_text = escape_markdown_v2(template.text)
 
             # Build inline keyboard from template buttons (rows of buttons)
             reply_markup = None

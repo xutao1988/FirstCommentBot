@@ -11,7 +11,6 @@ from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.helpers import escape_markdown
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -22,7 +21,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import Template, _normalize_buttons, load_templates
+from config import Template, _normalize_buttons, escape_markdown_v2, load_templates
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +408,9 @@ def register_template_handlers(app: Application, bot) -> None:
         context.user_data["tpl_action"] = "add"
         await query.edit_message_text(
             "请发送新的评论模板内容：\n\n"
+            "支持 Markdown 格式：\n"
+            "  *加粗*   _斜体_   ~删除线~\n"
+            "  [链接文字](https://example.com)\n\n"
             "如需添加 URL 按钮，用 --- 分隔，例如：\n"
             "沙发已备好\n"
             "---\n"
@@ -966,7 +968,7 @@ def register_template_handlers(app: Application, bot) -> None:
             return
 
         template = templates[idx]
-        escaped_text = escape_markdown(template.text, version=2)
+        escaped_text = escape_markdown_v2(template.text)
 
         reply_markup = None
         if template.buttons:
@@ -984,7 +986,7 @@ def register_template_handlers(app: Application, bot) -> None:
             reply_markup = InlineKeyboardMarkup(kb_rows)
 
         # Send as a new message so the user sees the actual rendering
-        prefix = escape_markdown(f"\U0001f50d 模板 #{idx + 1} 预览：\n\n", version=2)
+        prefix = escape_markdown_v2(f"\U0001f50d 模板 #{idx + 1} 预览：\n\n")
         chat_id = update.effective_chat.id
         caption_or_text = f"{prefix}{escaped_text}"
 
