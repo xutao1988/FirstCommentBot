@@ -966,6 +966,18 @@ class ChannelReviewBot:
             drop_pending_updates=True,
             allowed_updates=["message", "callback_query", "my_chat_member"],
         )
+
+        # Notify owner on startup
+        owner_id = self.config.settings.owner_id
+        if owner_id:
+            try:
+                await self.application.bot.send_message(
+                    chat_id=owner_id,
+                    text=f"\U0001f7e2 Bot [{self.name}] \u5df2\u542f\u52a8",
+                )
+            except Exception as e:
+                logger.warning("[%s] Failed to send startup notification: %s", self.name, e)
+
         self._schedule_daily_report()
         logger.info("[%s] Started polling", self.name)
 
