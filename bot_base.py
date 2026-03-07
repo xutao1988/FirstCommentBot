@@ -37,6 +37,7 @@ class ChannelReviewBot:
         self._templates: dict[int, list[Template]] = {}  # discussion_group_id -> templates
         self._channel_settings: dict[int, ChannelConfig] = {}  # discussion_group_id -> config
         self._post_counter: dict[int, int] = {}  # discussion_group_id -> post count
+        self._seen_media_groups: dict[int, set[str]] = {}  # gid -> set of media_group_id
         self.application: Application | None = None
         self._manager = None  # set by BotManager after creation
 
@@ -273,6 +274,19 @@ class ChannelReviewBot:
             return
 
         chat_id = message.chat_id
+
+        # Deduplicate album (media group) — only reply to the first message
+        if message.media_group_id:
+            seen = self._seen_media_groups.setdefault(chat_id, set())
+            if message.media_group_id in seen:
+                logger.debug("[%s] Skipping duplicate media_group %s in group %d", self.name, message.media_group_id, chat_id)
+                return
+            seen.add(message.media_group_id)
+            # Prevent unbounded growth: keep only the last 200 entries per group
+            if len(seen) > 200:
+                excess = len(seen) - 200
+                for _ in range(excess):
+                    seen.pop()
 
         # Track posts seen
         stats = self._daily_stats.setdefault(chat_id, {"posts_seen": 0, "replies_sent": 0})
