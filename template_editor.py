@@ -44,6 +44,51 @@ _STYLE_TO_CN = {"danger": "红", "primary": "蓝", "success": "绿"}
 _BTN_RE = re.compile(r"\[(.+?)]\((.+?)\)(?:\{(.+?)})?")  # findall per line
 
 
+def _templates_to_dicts(templates: list[Template]) -> list[dict]:
+    """Convert a list of Template objects to serializable dicts."""
+    return [
+        {
+            "text": t.text,
+            "weight": t.weight,
+            "buttons": t.buttons,
+            "frozen": t.frozen,
+            "media_file_id": t.media_file_id,
+            "media_type": t.media_type,
+        }
+        for t in templates
+    ]
+
+
+def save_public_templates(data_dir: str, user_id: int, templates: list[Template]) -> None:
+    """Persist public templates to data/public_templates_<user_id>.json."""
+    path = Path(data_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    file_path = path / f"public_templates_{user_id}.json"
+    data = {"templates": _templates_to_dicts(templates)}
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_public_templates(data_dir: str, user_id: int) -> list[Template]:
+    """Load public templates for a user. Returns empty list if not found."""
+    file_path = Path(data_dir) / f"public_templates_{user_id}.json"
+    if not file_path.exists():
+        return []
+    with open(file_path, encoding="utf-8") as f:
+        data = json.load(f)
+    return [
+        Template(
+            text=t["text"],
+            weight=t.get("weight", 1),
+            buttons=_normalize_buttons(t.get("buttons", [])),
+            frozen=t.get("frozen", False),
+            media_file_id=t.get("media_file_id", ""),
+            media_type=t.get("media_type", ""),
+        )
+        for t in data.get("templates", [])
+    ]
+
+
 def save_group_templates(data_dir: str, group_id: int, templates: list[Template]) -> None:
     """Persist templates to data/group_<id>.json."""
     path = Path(data_dir)
@@ -213,6 +258,7 @@ def _build_main_keyboard(num_templates: int = 0) -> InlineKeyboardMarkup:
             InlineKeyboardButton("\U0001f4ca 间隔", callback_data="tpl_interval"),
         ],
     ]
+    rows.append([InlineKeyboardButton("\U0001f4e2 公共模板", callback_data="tpl_public")])
     if num_templates > 0:
         rows.append([InlineKeyboardButton("\U0001f441 预览模板", callback_data="tpl_preview")])
     return InlineKeyboardMarkup(rows)
@@ -1015,6 +1061,234 @@ def register_template_handlers(app: Application, bot) -> None:
                 parse_mode=ParseMode.MARKDOWN_V2, reply_markup=reply_markup,
             )
 
+    # ---- Public template handlers ----
+
+    def _build_public_menu_keyboard(has_public: bool, has_group_tpl: bool) -> InlineKeyboardMarkup:
+        """Build the public template sub-menu keyboard."""
+        rows = []
+        if has_group_tpl:
+            rows.append([InlineKeyboardButton("\U0001f4e4 设为公共", callback_data="tpl_pub_export")])
+        if has_public:
+            rows.append([InlineKeyboardButton("\U0001f4e5 导入公共模板", callback_data="tpl_pub_import")])
+            rows.append([InlineKeyboardButton("\U0001f5d1\ufe0f 删除公共模板", callback_data="tpl_pub_del")])
+        rows.append([InlineKeyboardButton("\U0001f519 返回", callback_data="tpl_back")])
+        return InlineKeyboardMarkup(rows)
+
+    def _build_public_list_text(templates: list[Template]) -> str:
+        """Build display text for public templates."""
+        if not templates:
+            return "\U0001f4e2 你还没有公共模板。"
+        lines = [f"\U0001f4e2 公共模板（共 {len(templates)} 条）\n"]
+        for i, t in enumerate(templates, 1):
+            display_text = t.text if len(t.text) <= 60 else t.text[:57] + "..."
+            suffix = ""
+            if t.buttons:
+                btn_total = sum(len(row) for row in t.buttons)
+                suffix += f" [按钮: {btn_total}]"
+            if t.media_type == "photo":
+                suffix += " [图片]"
+            elif t.media_type == "animation":
+                suffix += " [GIF]"
+            elif t.media_type == "video":
+                suffix += " [视频]"
+            lines.append(f"{i}. {display_text}{suffix}")
+        return "\n".join(lines)
+
+    async def cb_public_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle tpl_public callback — show public template sub-menu."""
+        query = update.callback_query
+        await query.answer()
+
+        gid = _get_group_id(context)
+        if not gid:
+            await query.edit_message_text("\u26a0\ufe0f 请先使用 /templates 选择群组。")
+            return
+
+        user_id = update.effective_user.id
+        if not _check_permission(bot, user_id, gid):
+            await query.edit_message_text("\u26a0\ufe0f 你没有该群组的编辑权限。")
+            return
+
+        data_dir = bot.config.settings.data_dir
+        pub_templates = load_public_templates(data_dir, user_id)
+        group_templates = bot._templates.get(gid, [])
+
+        text = _build_public_list_text(pub_templates)
+        keyboard = _build_public_menu_keyboard(bool(pub_templates), bool(group_templates))
+        await query.edit_message_text(text, reply_markup=keyboard)
+
+    async def cb_pub_export_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle tpl_pub_export — show group templates to pick one for export to public."""
+        query = update.callback_query
+        await query.answer()
+
+        gid = _get_group_id(context)
+        if not gid:
+            await query.edit_message_text("\u26a0\ufe0f 请先使用 /templates 选择群组。")
+            return
+
+        user_id = update.effective_user.id
+        if not _check_permission(bot, user_id, gid):
+            await query.edit_message_text("\u26a0\ufe0f 你没有该群组的编辑权限。")
+            return
+
+        templates = bot._templates.get(gid, [])
+        if not templates:
+            await query.edit_message_text("当前群组没有模板可导出。")
+            return
+
+        text = _build_template_list_text(templates) + "\n\n请选择要设为公共的模板编号："
+        await query.edit_message_text(text, reply_markup=_build_select_keyboard(templates, "tpl_pexp"))
+
+    async def cb_pub_export_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle tpl_pexp_N — copy template #N from group to user's public pool."""
+        query = update.callback_query
+        await query.answer()
+
+        gid = _get_group_id(context)
+        if not gid:
+            await query.edit_message_text("\u26a0\ufe0f 请先使用 /templates 选择群组。")
+            return
+
+        user_id = update.effective_user.id
+        if not _check_permission(bot, user_id, gid):
+            await query.edit_message_text("\u26a0\ufe0f 你没有该群组的编辑权限。")
+            return
+
+        idx = int(query.data.split("_")[-1])
+        templates = bot._templates.get(gid, [])
+
+        if idx < 0 or idx >= len(templates):
+            await query.edit_message_text("\u26a0\ufe0f 无效的模板编号。")
+            return
+
+        src = templates[idx]
+        data_dir = bot.config.settings.data_dir
+        pub_templates = load_public_templates(data_dir, user_id)
+
+        # Copy template (reset frozen to False, weight to 1 for public)
+        pub_tpl = Template(
+            text=src.text, weight=1, buttons=list(src.buttons),
+            frozen=False, media_file_id=src.media_file_id, media_type=src.media_type,
+        )
+        pub_templates.append(pub_tpl)
+        save_public_templates(data_dir, user_id, pub_templates)
+
+        text = f"\u2705 已将模板 #{idx + 1} 设为公共模板\n\n" + _build_public_list_text(pub_templates)
+        keyboard = _build_public_menu_keyboard(bool(pub_templates), bool(templates))
+        await query.edit_message_text(text, reply_markup=keyboard)
+
+    async def cb_pub_import_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle tpl_pub_import — show public templates to pick one for import."""
+        query = update.callback_query
+        await query.answer()
+
+        gid = _get_group_id(context)
+        if not gid:
+            await query.edit_message_text("\u26a0\ufe0f 请先使用 /templates 选择群组。")
+            return
+
+        user_id = update.effective_user.id
+        if not _check_permission(bot, user_id, gid):
+            await query.edit_message_text("\u26a0\ufe0f 你没有该群组的编辑权限。")
+            return
+
+        data_dir = bot.config.settings.data_dir
+        pub_templates = load_public_templates(data_dir, user_id)
+        if not pub_templates:
+            await query.edit_message_text("你还没有公共模板。")
+            return
+
+        text = _build_public_list_text(pub_templates) + "\n\n请选择要导入到当前群组的模板编号："
+        await query.edit_message_text(text, reply_markup=_build_select_keyboard(pub_templates, "tpl_pimp"))
+
+    async def cb_pub_import_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle tpl_pimp_N — copy public template #N into current group."""
+        query = update.callback_query
+        await query.answer()
+
+        gid = _get_group_id(context)
+        if not gid:
+            await query.edit_message_text("\u26a0\ufe0f 请先使用 /templates 选择群组。")
+            return
+
+        user_id = update.effective_user.id
+        if not _check_permission(bot, user_id, gid):
+            await query.edit_message_text("\u26a0\ufe0f 你没有该群组的编辑权限。")
+            return
+
+        # Enforce template limit for non-owner users
+        owner_id = bot.config.settings.owner_id
+        group_templates = bot._templates.get(gid, [])
+        if user_id != owner_id and len(group_templates) >= FREE_TEMPLATE_LIMIT:
+            await query.edit_message_text(
+                f"\u26a0\ufe0f 免费用户每个群组最多 {FREE_TEMPLATE_LIMIT} 条模板。\n"
+                "升级 Pro 可解锁更多模板数量。"
+            )
+            return
+
+        idx = int(query.data.split("_")[-1])
+        data_dir = bot.config.settings.data_dir
+        pub_templates = load_public_templates(data_dir, user_id)
+
+        if idx < 0 or idx >= len(pub_templates):
+            await query.edit_message_text("\u26a0\ufe0f 无效的模板编号。")
+            return
+
+        src = pub_templates[idx]
+        new_tpl = Template(
+            text=src.text, weight=src.weight, buttons=list(src.buttons),
+            frozen=False, media_file_id=src.media_file_id, media_type=src.media_type,
+        )
+        group_templates.append(new_tpl)
+        bot._templates[gid] = group_templates
+        save_group_templates(data_dir, gid, group_templates)
+
+        meta = bot._load_groups_meta()
+        title = meta.get(str(gid), {}).get("group_title") or f"群组 {gid}"
+        text = f"\u2705 已将公共模板 #{idx + 1} 导入到 {title}\n\n" + _build_template_list_text(group_templates)
+        await query.edit_message_text(text, reply_markup=_build_main_keyboard(len(group_templates)))
+
+    async def cb_pub_del_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle tpl_pub_del — show public templates to pick one for deletion."""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        data_dir = bot.config.settings.data_dir
+        pub_templates = load_public_templates(data_dir, user_id)
+        if not pub_templates:
+            await query.edit_message_text("你还没有公共模板。")
+            return
+
+        text = _build_public_list_text(pub_templates) + "\n\n请选择要删除的公共模板："
+        await query.edit_message_text(text, reply_markup=_build_select_keyboard(pub_templates, "tpl_pdel"))
+
+    async def cb_pub_del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle tpl_pdel_N — delete public template #N."""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        data_dir = bot.config.settings.data_dir
+        pub_templates = load_public_templates(data_dir, user_id)
+
+        idx = int(query.data.split("_")[-1])
+        if idx < 0 or idx >= len(pub_templates):
+            await query.edit_message_text("\u26a0\ufe0f 无效的模板编号。")
+            return
+
+        removed = pub_templates.pop(idx)
+        save_public_templates(data_dir, user_id, pub_templates)
+
+        gid = _get_group_id(context)
+        group_templates = bot._templates.get(gid, []) if gid else []
+
+        msg = f"\u2705 已删除公共模板 #{idx + 1}（{removed.text[:30]}...）"
+        text = msg + "\n\n" + _build_public_list_text(pub_templates)
+        keyboard = _build_public_menu_keyboard(bool(pub_templates), bool(group_templates))
+        await query.edit_message_text(text, reply_markup=keyboard)
+
     async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle tpl_back callback — return to main template list."""
         query = update.callback_query
@@ -1072,6 +1346,13 @@ def register_template_handlers(app: Application, bot) -> None:
     app.add_handler(CallbackQueryHandler(cb_interval_adjust, pattern=r"^tpl_itv_(inc|dec)_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_preview_select, pattern=r"^tpl_preview$"))
     app.add_handler(CallbackQueryHandler(cb_preview_send, pattern=r"^tpl_pv_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_public_menu, pattern=r"^tpl_public$"))
+    app.add_handler(CallbackQueryHandler(cb_pub_export_select, pattern=r"^tpl_pub_export$"))
+    app.add_handler(CallbackQueryHandler(cb_pub_export_confirm, pattern=r"^tpl_pexp_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_pub_import_select, pattern=r"^tpl_pub_import$"))
+    app.add_handler(CallbackQueryHandler(cb_pub_import_confirm, pattern=r"^tpl_pimp_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_pub_del_select, pattern=r"^tpl_pub_del$"))
+    app.add_handler(CallbackQueryHandler(cb_pub_del_confirm, pattern=r"^tpl_pdel_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_back, pattern=r"^tpl_back$"))
 
     logger.info("Template editor handlers registered")
